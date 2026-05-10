@@ -21,7 +21,7 @@ class MinecraftModrinthService
     }
 
     /** @return array{icon: string, name: string, supported_project_types: string[], display_name: string}|null */
-    public function getLoaderFromServer(Server $server): ?array
+    public function getLoaderFromServer(Server $server, ?ModrinthProjectType $projectType = null): ?array
     {
         $server->loadMissing('egg');
 
@@ -31,14 +31,20 @@ class MinecraftModrinthService
             return null;
         }
 
-        $projectType = ModrinthProjectType::fromServer($server)?->value;
-        if (!$projectType) {
+        $projectTypes = $projectType
+            ? [$projectType->value]
+            : array_map(
+                static fn (ModrinthProjectType $projectType): string => $projectType->value,
+                ModrinthProjectType::fromServerProjectTypes($server),
+            );
+
+        if (empty($projectTypes)) {
             return null;
         }
 
         $loaders = $this->getLoaders();
         foreach ($loaders as $loader) {
-            if (!in_array($projectType, $loader['supported_project_types'])) {
+            if (!array_intersect($projectTypes, $loader['supported_project_types'])) {
                 continue;
             }
 
@@ -70,12 +76,17 @@ class MinecraftModrinthService
     }
 
     /** @return array{hits: array<int, array<string, mixed>>, total_hits: int} */
-    public function getProjects(Server $server, int $page = 1, ?string $search = null): array
+    public function getProjects(Server $server, int $page = 1, ?string $search = null, ?ModrinthProjectType $projectType = null): array
     {
-        $projectType = ModrinthProjectType::fromServer($server)?->value;
-        $minecraftLoader = $this->getLoaderFromServer($server);
+        $projectTypes = $projectType
+            ? [$projectType->value]
+            : array_map(
+                static fn (ModrinthProjectType $projectType): string => $projectType->value,
+                ModrinthProjectType::fromServerProjectTypes($server),
+            );
+        $minecraftLoader = $this->getLoaderFromServer($server, $projectType);
 
-        if (!$projectType || !$minecraftLoader) {
+        if (empty($projectTypes) || !$minecraftLoader) {
             return [
                 'hits' => [],
                 'total_hits' => 0,
@@ -85,13 +96,19 @@ class MinecraftModrinthService
         $minecraftVersion = $this->getMinecraftVersion($server);
         $minecraftLoader = $minecraftLoader['name'];
 
+        $projectTypeFacets = implode(',', array_map(
+            static fn (string $projectType): string => "\"project_type:$projectType\"",
+            $projectTypes,
+        ));
+
         $data = [
             'offset' => ($page - 1) * 20,
             'limit' => 20,
-            'facets' => "[[\"categories:$minecraftLoader\"],[\"versions:$minecraftVersion\"],[\"project_type:{$projectType}\"]]",
+            'facets' => "[[\"categories:$minecraftLoader\"],[\"versions:$minecraftVersion\"],[$projectTypeFacets]]",
         ];
 
-        $key = "modrinth_projects:{$projectType}:$minecraftVersion:$minecraftLoader:$page";
+        $projectTypeKey = implode('|', $projectTypes);
+        $key = "modrinth_projects:$projectTypeKey:$minecraftVersion:$minecraftLoader:$page";
 
         if ($search) {
             $data['query'] = $search;

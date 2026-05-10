@@ -38,12 +38,18 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
 
     protected static ?int $navigationSort = 30;
 
+    protected static ?ModrinthProjectType $projectType = null;
+
     public static function canAccess(): bool
     {
+        if (!static::$projectType) {
+            return false;
+        }
+
         /** @var Server $server */
         $server = Filament::getTenant();
 
-        return parent::canAccess() && ModrinthProjectType::fromServer($server);
+        return parent::canAccess() && in_array(static::$projectType, ModrinthProjectType::fromServerProjectTypes($server), true);
     }
 
     public static function getNavigationLabel(): string
@@ -51,7 +57,7 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
         /** @var Server $server */
         $server = Filament::getTenant();
 
-        return ModrinthProjectType::fromServer($server)->getLabel();
+        return static::$projectType?->getLabel() ?? trans('minecraft-modrinth::strings.plugin_name');
     }
 
     public static function getModelLabel(): string
@@ -79,7 +85,7 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                 /** @var Server $server */
                 $server = Filament::getTenant();
 
-                $response = MinecraftModrinth::getProjects($server, $page, $search);
+                $response = MinecraftModrinth::getProjects($server, $page, $search, static::$projectType);
 
                 return new LengthAwarePaginator($response['hits'], $response['total_hits'], 20, $page);
             })
@@ -155,9 +161,15 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                                     Action::make('exclude_download')
                                         ->label(trans('minecraft-modrinth::strings.actions.download'))
                                         ->visible(!is_null($primaryFile))
-                                        ->action(function (DaemonFileRepository $fileRepository) use ($server, $versionData, $primaryFile) {
+                                        ->action(function (DaemonFileRepository $fileRepository) use ($server, $record, $versionData, $primaryFile) {
                                             try {
-                                                $fileRepository->setServer($server)->pull($primaryFile['url'], ModrinthProjectType::fromServer($server)->getFolder());
+                                                $folder = static::$projectType?->getFolder();
+
+                                                if (!$folder) {
+                                                    throw new Exception(trans('minecraft-modrinth::strings.page.unknown'));
+                                                }
+
+                                                $fileRepository->setServer($server)->pull($primaryFile['url'], $folder);
 
                                                 Notification::make()
                                                     ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -184,13 +196,14 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
 
     protected function getHeaderActions(): array
     {
-        /** @var Server $server */
-        $server = Filament::getTenant();
+        $folder = static::$projectType?->getFolder();
 
-        $folder = ModrinthProjectType::fromServer($server)->getFolder();
+        if (!$folder) {
+            return [];
+        }
 
         return [
-            Action::make('open_folder')
+            Action::make("open_folder_$folder")
                 ->tooltip(fn () => trans('minecraft-modrinth::strings.page.open_folder', ['folder' => $folder]))
                 ->icon('tabler-folder-open')
                 ->url(fn () => ListFiles::getUrl(['path' => $folder]), true),
@@ -210,14 +223,20 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                             ->state(fn () => MinecraftModrinth::getMinecraftVersion($server) ?? trans('minecraft-modrinth::strings.page.unknown'))
                             ->badge(),
                         TextEntry::make('Loader')
-                            ->state(fn () => MinecraftModrinth::getLoaderFromServer($server)['display_name'] ?? trans('minecraft-modrinth::strings.page.unknown'))
-                            ->icon(fn () => new HtmlString(MinecraftModrinth::getLoaderFromServer($server)['icon'] ?? ''))
+                            ->state(fn () => MinecraftModrinth::getLoaderFromServer($server, static::$projectType)['display_name'] ?? trans('minecraft-modrinth::strings.page.unknown'))
+                            ->icon(fn () => new HtmlString(MinecraftModrinth::getLoaderFromServer($server, static::$projectType)['icon'] ?? ''))
                             ->badge(),
                         TextEntry::make('installed')
-                            ->label(fn () => trans('minecraft-modrinth::strings.page.installed', ['type' => ModrinthProjectType::fromServer($server)->getLabel()]))
+                            ->label(fn () => trans('minecraft-modrinth::strings.page.installed', ['type' => static::$projectType?->getLabel() ?? trans('minecraft-modrinth::strings.plugin_name')]))
                             ->state(function (DaemonFileRepository $fileRepository) use ($server) {
                                 try {
-                                    $files = $fileRepository->setServer($server)->getDirectory(ModrinthProjectType::fromServer($server)->getFolder());
+                                    $folder = static::$projectType?->getFolder();
+
+                                    if (!$folder) {
+                                        return 0;
+                                    }
+
+                                    $files = $fileRepository->setServer($server)->getDirectory($folder);
 
                                     if (isset($files['error'])) {
                                         throw new Exception($files['error']);
